@@ -1,1 +1,38 @@
-{"expo":{"name":"Expense Report","slug":"expense-report","version":"1.0.0","orientation":"portrait","userInterfaceStyle":"light"}}
+{
+  "expo": {
+    "name": "Expense Report",
+    "slug": "expense-report",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+
+    "splash": {
+      "backgroundColor": "#FFFFFF"
+    },
+
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+
+    "android": {
+      "package": "com.expensereport.employee",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "android.permission.INTERNET"
+      ]
+    },
+
+    "extra": {
+      "eas": {
+        "projectId": "f278e664-df97-4aff-a4e1-bacc2f5c260b"
+      }
+    }
+  }
+}
