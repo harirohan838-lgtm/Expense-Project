@@ -9,7 +9,10 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "http://192.168.1.102:8000"
+      }
     },
     "production": {
       "autoIncrement": true
