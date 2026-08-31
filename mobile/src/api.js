@@ -1,4 +1,5 @@
-export const API_BASE = "http://10.212.29.168:8000";
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
+
 export async function apiFetch(path, options = {}, token = null) {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
