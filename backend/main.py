@@ -9,7 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "expense_db.sqlite3"
+
+# Vercel serverless functions have a read-only deployment filesystem.
+# Use /tmp for the temporary SQLite database on Vercel.
+if Path("/var/task").exists():
+    DB_PATH = Path("/tmp/expense_db.sqlite3")
+else:
+    DB_PATH = BASE_DIR / "expense_db.sqlite3"
+
 SECRET_KEY = "expense-report-demo-secret-change-in-production"
 ALGORITHM = "HS256"
 
