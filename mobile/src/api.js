@@ -1,4 +1,4 @@
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "https://expense-api-production-0879.up.railway.app";
 
 export async function apiFetch(path, options = {}, token = null) {
   const res = await fetch(`${API_BASE}${path}`, {
