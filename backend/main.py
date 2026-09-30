@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
+import os
 from pathlib import Path
-import sqlite3
 from typing import Optional
 
 import jwt
@@ -8,32 +8,62 @@ from fastapi import FastAPI, HTTPException, Query, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy.orm import DeclarativeBase, Session
 
 BASE_DIR = Path(__file__).resolve().parent
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-
-# Vercel serverless functions have a read-only deployment filesystem.
-# Use /tmp for the temporary SQLite database on Vercel.
-if Path("/var/task").exists():
-    DB_PATH = Path("/tmp/expense_db.sqlite3")
+# PostgreSQL is used in production. SQLite remains available for local development.
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 else:
-    DB_PATH = BASE_DIR / "expense_db.sqlite3"
+    engine = create_engine(
+        f"sqlite:///{BASE_DIR / 'expense_db.sqlite3'}",
+        connect_args={"check_same_thread": False},
+    )
 
 
-SECRET_KEY = "expense-report-demo-secret-change-in-production"
+class Base(DeclarativeBase):
+    pass
+
+
+class Employee(Base):
+    __tablename__ = "employees"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    role = Column(String(50), nullable=False, default="employee")
+    manager_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    department = Column(String(100), nullable=True)
+
+
+class Expense(Base):
+    __tablename__ = "expenses"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    category = Column(String(100), nullable=False)
+    amount = Column(Float, nullable=False)
+    expense_date = Column(String(20), nullable=False)
+    description = Column(Text, nullable=True)
+    receipt_filename = Column(String(255), nullable=True)
+    status = Column(String(50), nullable=False, default="draft")
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+
+Base.metadata.create_all(engine)
+
+SECRET_KEY = os.getenv("SECRET_KEY", "expense-report-demo-secret-change-in-production")
 ALGORITHM = "HS256"
 
-
-app = FastAPI(
-    title="Expense Report System API",
-    version="1.0.0"
-)
-
-
-# Bearer authentication for Swagger/OpenAPI
+app = FastAPI(title="Expense Report System API", version="1.0.0")
 security = HTTPBearer(auto_error=False)
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,63 +74,24 @@ app.add_middleware(
 )
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def init_db():
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS employees (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            role TEXT NOT NULL DEFAULT 'employee',
-            manager_id INTEGER,
-            department TEXT,
-            FOREIGN KEY (manager_id) REFERENCES employees(id)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            category TEXT NOT NULL,
-            amount REAL NOT NULL,
-            expense_date TEXT NOT NULL,
-            description TEXT,
-            receipt_filename TEXT,
-            status TEXT NOT NULL DEFAULT 'draft',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (employee_id) REFERENCES employees(id)
-        )
-    """)
-
-    employees = [
-        ("Amit Employee", "amit@beeja.com", "employee", None, "Sales"),
-        ("Neha Employee", "neha@beeja.com", "employee", None, "Operations"),
-        ("Rahul Employee", "rahul@beeja.com", "employee", None, "Finance"),
-    ]
-
-    for employee in employees:
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO employees
-            (name, email, role, manager_id, department)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            employee,
-        )
-
-    conn.commit()
-    conn.close()
+    with Session(engine) as session:
+        employees = [
+            ("Jeevitha", "jeevitha@beeja.com", "Sales"),
+            ("Manoj", "manoj@beeja.com", "Operations"),
+            ("Kavya", "kavya@beeja.com", "Finance"),
+            ("Karunya", "karunya@beeja.com", "HR"),
+            ("Akshaya", "akshaya@beeja.com", "Marketing"),
+            ("Pranaya", "pranaya@beeja.com", "Technology"),
+            ("Amit Employee", "amit@beeja.com", "Sales"),
+            ("Neha Employee", "neha@beeja.com", "Operations"),
+            ("Rahul Employee", "rahul@beeja.com", "Finance"),
+        ]
+        existing = {e.email.lower() for e in session.scalars(select(Employee)).all()}
+        for name, email, department in employees:
+            if email.lower() not in existing:
+                session.add(Employee(name=name, email=email, role="employee", department=department))
+        session.commit()
 
 
 init_db()
@@ -121,116 +112,79 @@ class ExpenseCreate(BaseModel):
 
 
 def create_token(employee_id: int):
-    payload = {
-        "sub": str(employee_id),
-        "exp": datetime.utcnow() + timedelta(hours=8),
-    }
-
-    return jwt.encode(
-        payload,
-        SECRET_KEY,
-        algorithm=ALGORITHM
-    )
+    payload = {"sub": str(employee_id), "exp": datetime.utcnow() + timedelta(hours=8)}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_employee(
-    credentials: Optional[HTTPAuthorizationCredentials]
-):
+def get_current_employee(credentials: Optional[HTTPAuthorizationCredentials]):
     if not credentials:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing authentication token"
-        )
-
-    token = credentials.credentials
-
+        raise HTTPException(status_code=401, detail="Missing authentication token")
     try:
-        payload = jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
-        )
-
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         employee_id = int(payload["sub"])
-
     except Exception:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    conn = get_db()
-
-    employee = conn.execute(
-        "SELECT * FROM employees WHERE id = ?",
-        (employee_id,)
-    ).fetchone()
-
-    conn.close()
-
-    if not employee:
-        raise HTTPException(
-            status_code=401,
-            detail="Employee not found"
-        )
-
-    return employee
+    with Session(engine) as session:
+        employee = session.get(Employee, employee_id)
+        if not employee:
+            raise HTTPException(status_code=401, detail="Employee not found")
+        return {
+            "id": employee.id,
+            "name": employee.name,
+            "email": employee.email,
+            "role": employee.role,
+            "department": employee.department,
+        }
 
 
-def expense_dict(row):
-    return dict(row)
+def expense_dict(expense: Expense):
+    return {
+        "id": expense.id,
+        "employee_id": expense.employee_id,
+        "title": expense.title,
+        "category": expense.category,
+        "amount": expense.amount,
+        "expense_date": expense.expense_date,
+        "description": expense.description or "",
+        "receipt_filename": expense.receipt_filename or "",
+        "status": expense.status,
+        "created_at": expense.created_at.isoformat(timespec="seconds"),
+        "updated_at": expense.updated_at.isoformat(timespec="seconds"),
+    }
 
 
 @app.get("/")
 def root():
-    return {
-        "message": "Expense Report System API is running",
-        "docs": "/docs",
-    }
+    return {"message": "Expense Report System API is running", "docs": "/docs"}
 
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok"
-    }
+    return {"status": "ok"}
 
 
 @app.post("/auth/login")
 def login(request: LoginRequest):
-    conn = get_db()
-
-    employee = conn.execute(
-        """
-        SELECT * FROM employees
-        WHERE LOWER(email) = LOWER(?) AND role = ?
-        """,
-        (
-            request.email.strip(),
-            request.role
-        ),
-    ).fetchone()
-
-    conn.close()
-
-    if not employee:
-        raise HTTPException(
-            status_code=401,
-            detail="Employee email not found",
+    with Session(engine) as session:
+        employee = session.scalar(
+            select(Employee).where(
+                Employee.email.ilike(request.email.strip()),
+                Employee.role == request.role,
+            )
         )
-
-    token = create_token(employee["id"])
-
-    return {
-        "token": token,
-        "user": {
-            "id": employee["id"],
-            "name": employee["name"],
-            "email": employee["email"],
-            "role": employee["role"],
-            "department": employee["department"],
-        },
-    }
+        if not employee:
+            raise HTTPException(status_code=401, detail="Employee email not found")
+        return {
+            "token": create_token(employee.id),
+            "user": {
+                "id": employee.id,
+                "name": employee.name,
+                "email": employee.email,
+                "role": employee.role,
+                "department": employee.department,
+            },
+        }
 
 
 @app.get("/expenses")
@@ -239,40 +193,15 @@ def list_expenses(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ):
     employee = get_current_employee(credentials)
-
-    # Employees can only see their own expenses.
-    requested_id = (
-        employee["id"]
-        if employee_id is None
-        else employee_id
-    )
-
-    if requested_id != employee["id"]:
-        raise HTTPException(
-            status_code=403,
-            detail="You can only view your own expenses",
-        )
-
-    conn = get_db()
-
-    rows = conn.execute(
-        """
-        SELECT id, employee_id, title, category, amount, expense_date,
-               description, receipt_filename, status,
-               created_at, updated_at
-        FROM expenses
-        WHERE employee_id = ?
-        ORDER BY id DESC
-        """,
-        (employee["id"],),
-    ).fetchall()
-
-    conn.close()
-
-    return [
-        expense_dict(row)
-        for row in rows
-    ]
+    if employee_id is not None and employee_id != employee["id"]:
+        raise HTTPException(status_code=403, detail="You can only view your own expenses")
+    with Session(engine) as session:
+        rows = session.scalars(
+            select(Expense)
+            .where(Expense.employee_id == employee["id"])
+            .order_by(Expense.id.desc())
+        ).all()
+        return [expense_dict(row) for row in rows]
 
 
 @app.post("/expenses")
@@ -281,63 +210,29 @@ def create_expense(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ):
     employee = get_current_employee(credentials)
-
     try:
         date.fromisoformat(expense.expense_date)
-
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="expense_date must be YYYY-MM-DD",
-        )
+        raise HTTPException(status_code=400, detail="expense_date must be YYYY-MM-DD")
 
-    now = datetime.now().isoformat(timespec="seconds")
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO expenses
-        (
-            employee_id,
-            title,
-            category,
-            amount,
-            expense_date,
-            description,
-            receipt_filename,
-            status,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
-        """,
-        (
-            employee["id"],
-            expense.title.strip(),
-            expense.category,
-            expense.amount,
-            expense.expense_date,
-            expense.description or "",
-            expense.receipt_filename or "",
-            now,
-            now,
-        ),
+    now = datetime.now()
+    new_expense = Expense(
+        employee_id=employee["id"],
+        title=expense.title.strip(),
+        category=expense.category,
+        amount=expense.amount,
+        expense_date=expense.expense_date,
+        description=expense.description or "",
+        receipt_filename=expense.receipt_filename or "",
+        status="draft",
+        created_at=now,
+        updated_at=now,
     )
-
-    expense_id = cur.lastrowid
-
-    conn.commit()
-
-    row = conn.execute(
-        "SELECT * FROM expenses WHERE id = ?",
-        (expense_id,)
-    ).fetchone()
-
-    conn.close()
-
-    return expense_dict(row)
+    with Session(engine) as session:
+        session.add(new_expense)
+        session.commit()
+        session.refresh(new_expense)
+        return expense_dict(new_expense)
 
 
 @app.get("/expenses/{expense_id}")
@@ -346,29 +241,16 @@ def get_expense(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ):
     employee = get_current_employee(credentials)
-
-    conn = get_db()
-
-    row = conn.execute(
-        """
-        SELECT * FROM expenses
-        WHERE id = ? AND employee_id = ?
-        """,
-        (
-            expense_id,
-            employee["id"]
-        ),
-    ).fetchone()
-
-    conn.close()
-
-    if not row:
-        raise HTTPException(
-            status_code=404,
-            detail="Expense not found"
+    with Session(engine) as session:
+        expense = session.scalar(
+            select(Expense).where(
+                Expense.id == expense_id,
+                Expense.employee_id == employee["id"],
+            )
         )
-
-    return expense_dict(row)
+        if not expense:
+            raise HTTPException(status_code=404, detail="Expense not found")
+        return expense_dict(expense)
 
 
 @app.post("/expenses/{expense_id}/submit")
@@ -377,62 +259,22 @@ def submit_expense(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ):
     employee = get_current_employee(credentials)
-
-    conn = get_db()
-
-    row = conn.execute(
-        """
-        SELECT * FROM expenses
-        WHERE id = ? AND employee_id = ?
-        """,
-        (
-            expense_id,
-            employee["id"]
-        ),
-    ).fetchone()
-
-    if not row:
-        conn.close()
-
-        raise HTTPException(
-            status_code=404,
-            detail="Expense not found"
+    with Session(engine) as session:
+        expense = session.scalar(
+            select(Expense).where(
+                Expense.id == expense_id,
+                Expense.employee_id == employee["id"],
+            )
         )
-
-    if row["status"] not in ("draft", "rejected"):
-        conn.close()
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Expense cannot be submitted "
-                f"from status '{row['status']}'"
-            ),
-        )
-
-    now = datetime.now().isoformat(timespec="seconds")
-
-    conn.execute(
-        """
-        UPDATE expenses
-        SET status = 'submitted',
-            updated_at = ?
-        WHERE id = ? AND employee_id = ?
-        """,
-        (
-            now,
-            expense_id,
-            employee["id"]
-        ),
-    )
-
-    conn.commit()
-
-    updated = conn.execute(
-        "SELECT * FROM expenses WHERE id = ?",
-        (expense_id,)
-    ).fetchone()
-
-    conn.close()
-
-    return expense_dict(updated)
+        if not expense:
+            raise HTTPException(status_code=404, detail="Expense not found")
+        if expense.status not in ("draft", "rejected"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Expense cannot be submitted from status '{expense.status}'",
+            )
+        expense.status = "submitted"
+        expense.updated_at = datetime.now()
+        session.commit()
+        session.refresh(expense)
+        return expense_dict(expense)
