@@ -1,0 +1,6 @@
+{
+  "installCommand": "cd mobile && npm ci",
+  "buildCommand": "cd mobile && npx expo export -p web",
+  "outputDirectory": "mobile/dist",
+  "cleanUrls": true
+}
